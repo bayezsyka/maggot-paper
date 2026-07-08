@@ -37,8 +37,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // --- Resolve device ---
-    const { data: device, error: deviceErr } = await supabaseAdmin
+    // --- Auto-create or resolve device ---
+    let { data: device, error: deviceErr } = await supabaseAdmin
       .from("devices")
       .select("id")
       .eq("device_code", body.device_code)
@@ -50,15 +50,28 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       );
     }
+
     if (!device) {
-      return Response.json(
-        { ok: false, error: `Device not found: ${body.device_code}` },
-        { status: 404 }
-      );
+      const { data: createdDev, error: createDevErr } = await supabaseAdmin
+        .from("devices")
+        .insert({
+          device_code: body.device_code,
+          device_name: body.device_code,
+        })
+        .select("id")
+        .single();
+
+      if (createDevErr || !createdDev) {
+        return Response.json(
+          { ok: false, error: `Auto-create device failed: ${createDevErr?.message}` },
+          { status: 500 }
+        );
+      }
+      device = createdDev;
     }
 
-    // --- Resolve session ---
-    const { data: session, error: sessionErr } = await supabaseAdmin
+    // --- Auto-create or resolve session ---
+    let { data: session, error: sessionErr } = await supabaseAdmin
       .from("test_sessions")
       .select("id")
       .eq("session_code", body.session_code)
@@ -70,11 +83,45 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       );
     }
+
     if (!session) {
-      return Response.json(
-        { ok: false, error: `Session not found: ${body.session_code}` },
-        { status: 404 }
-      );
+      const { data: createdSess, error: createSessErr } = await supabaseAdmin
+        .from("test_sessions")
+        .insert({
+          device_id: device.id,
+          session_code: body.session_code,
+          status: "running",
+          started_at: new Date().toISOString(),
+        })
+        .select("id")
+        .single();
+
+      if (createSessErr || !createdSess) {
+        return Response.json(
+          { ok: false, error: `Auto-create session failed: ${createSessErr?.message}` },
+          { status: 500 }
+        );
+      }
+      session = createdSess;
+    }
+
+    // --- Compute optional delta values if not provided by ESP32 ---
+    let deltaTemp: number | null = body.delta_temp ?? null;
+    if (
+      deltaTemp === null &&
+      typeof body.temp_air_in === "number" &&
+      typeof body.temp_air_out === "number"
+    ) {
+      deltaTemp = Number((body.temp_air_in - body.temp_air_out).toFixed(2));
+    }
+
+    let deltaRh: number | null = body.delta_rh ?? null;
+    if (
+      deltaRh === null &&
+      typeof body.rh_in === "number" &&
+      typeof body.rh_out === "number"
+    ) {
+      deltaRh = Number((body.rh_in - body.rh_out).toFixed(2));
     }
 
     // --- Insert sensor log ---
@@ -85,16 +132,27 @@ export async function POST(request: NextRequest) {
         device_id: device.id,
         esp32_uptime_ms: body.esp32_uptime_ms ?? null,
         elapsed_seconds: body.elapsed_seconds ?? null,
+        test_stage: body.test_stage ?? null,
+        phase_name: body.phase_name ?? null,
         mode: body.mode ?? null,
+        target_temp_min: body.target_temp_min ?? null,
+        target_temp_max: body.target_temp_max ?? null,
         temp_air_in: body.temp_air_in ?? null,
         rh_in: body.rh_in ?? null,
         temp_air_out: body.temp_air_out ?? null,
         rh_out: body.rh_out ?? null,
         temp_media: body.temp_media ?? null,
         soil_raw: body.soil_raw ?? null,
+        delta_temp: deltaTemp,
+        delta_rh: deltaRh,
+        temp_trend: body.temp_trend ?? null,
         heater_status: body.heater_status ?? null,
+        heater_demand: body.heater_demand ?? null,
         fan_intake_pwm: body.fan_intake_pwm ?? null,
         fan_exhaust_pwm: body.fan_exhaust_pwm ?? null,
+        safety_state: body.safety_state ?? null,
+        sensor_error_flags: body.sensor_error_flags ?? null,
+        http_success: body.http_success ?? true,
         wifi_rssi: body.wifi_rssi ?? null,
         note: body.note ?? null,
       })
@@ -109,7 +167,14 @@ export async function POST(request: NextRequest) {
     }
 
     return Response.json(
-      { ok: true, id: inserted.id, recorded_at: inserted.recorded_at },
+      {
+        ok: true,
+        status: "inserted",
+        session_code: body.session_code,
+        device_code: body.device_code,
+        log_id: inserted.id,
+        recorded_at: inserted.recorded_at,
+      },
       { status: 201 }
     );
   } catch (err) {
@@ -131,13 +196,15 @@ export async function GET(request: NextRequest) {
       searchParams.get("session_code") ||
       process.env.DEFAULT_SESSION_CODE ||
       "empty_chamber_test_01";
-    const limitParam = Number(searchParams.get("limit") || "100");
+    const limitParam = Number(searchParams.get("limit") || "200");
     const limit = Math.min(Math.max(1, limitParam), 1000);
+    const fromParam = searchParams.get("from");
+    const toParam = searchParams.get("to");
 
     // --- Resolve session ---
     const { data: session, error: sessionErr } = await supabaseAdmin
       .from("test_sessions")
-      .select("id, session_code, test_name, test_type, started_at, ended_at")
+      .select("*")
       .eq("session_code", sessionCode)
       .maybeSingle();
 
@@ -155,10 +222,19 @@ export async function GET(request: NextRequest) {
     }
 
     // --- Fetch logs ---
-    const { data: logs, error: logsErr } = await supabaseAdmin
+    let query = supabaseAdmin
       .from("sensor_logs")
       .select("*")
-      .eq("session_id", session.id)
+      .eq("session_id", session.id);
+
+    if (fromParam) {
+      query = query.gte("recorded_at", fromParam);
+    }
+    if (toParam) {
+      query = query.lte("recorded_at", toParam);
+    }
+
+    const { data: logs, error: logsErr } = await query
       .order("recorded_at", { ascending: false })
       .limit(limit);
 

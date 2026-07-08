@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /* ──────────────────────────────────────────────────────────
-   GET /api/export  — download sensor logs as CSV (semicolon)
+   GET /api/export  — download sensor logs as semicolon CSV
    ────────────────────────────────────────────────────────── */
 export async function GET(request: NextRequest) {
   try {
@@ -51,49 +51,64 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // --- Build CSV ---
     const headers = [
-      "No",
-      "Timestamp",
-      "Elapsed_Seconds",
-      "Elapsed_Minutes",
-      "Mode",
-      "Temp_Air_In_C",
-      "RH_In_Percent",
-      "Temp_Air_Out_C",
-      "RH_Out_Percent",
-      "Temp_Media_C",
-      "Soil_Raw",
-      "Heater_Status",
-      "Fan_Intake_PWM",
-      "Fan_Exhaust_PWM",
-      "ESP32_Uptime_ms",
-      "WiFi_RSSI",
+      "recorded_at",
+      "elapsed_seconds",
+      "session_code",
+      "test_stage",
+      "phase_name",
+      "mode",
+      "target_temp_min",
+      "target_temp_max",
+      "temp_air_in",
+      "rh_in",
+      "temp_air_out",
+      "rh_out",
+      "temp_media",
+      "soil_raw",
+      "delta_temp",
+      "delta_rh",
+      "temp_trend",
+      "heater_status",
+      "heater_demand",
+      "fan_intake_pwm",
+      "fan_exhaust_pwm",
+      "safety_state",
+      "sensor_error_flags",
+      "wifi_rssi",
+      "note",
     ];
 
-    const rows = (logs as SensorLog[]).map((row, idx) => [
-      idx + 1,
+    const rows = (logs as SensorLog[]).map((row) => [
       row.recorded_at ?? "",
       row.elapsed_seconds ?? "",
-      row.elapsed_seconds != null
-        ? Math.round((row.elapsed_seconds / 60) * 100) / 100
-        : "",
+      session.session_code,
+      row.test_stage ?? "",
+      row.phase_name ?? "",
       row.mode ?? "",
+      row.target_temp_min ?? "",
+      row.target_temp_max ?? "",
       row.temp_air_in ?? "",
       row.rh_in ?? "",
       row.temp_air_out ?? "",
       row.rh_out ?? "",
       row.temp_media ?? "",
       row.soil_raw ?? "",
+      row.delta_temp ?? "",
+      row.delta_rh ?? "",
+      row.temp_trend ?? "",
       row.heater_status === true
-        ? "ON"
+        ? 1
         : row.heater_status === false
-          ? "OFF"
+          ? 0
           : "",
+      row.heater_demand ?? "",
       row.fan_intake_pwm ?? "",
       row.fan_exhaust_pwm ?? "",
-      row.esp32_uptime_ms ?? "",
+      row.safety_state ?? "",
+      row.sensor_error_flags ?? "",
       row.wifi_rssi ?? "",
+      row.note ?? "",
     ]);
 
     const csv = buildCsv(headers, rows);
