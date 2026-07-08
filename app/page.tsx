@@ -176,13 +176,18 @@ export default function DashboardPage() {
     }
   }, [selectedSessionCode]);
 
+  /* ── Refresh Both Sessions & Logs ── */
+  const refreshAll = useCallback(async () => {
+    await Promise.all([loadSessions(), fetchLogs()]);
+  }, [loadSessions, fetchLogs]);
+
   useEffect(() => {
     if (!authed || !selectedSessionCode) return;
-    fetchLogs();
+    refreshAll();
     if (!autoRefresh) return;
-    const iv = setInterval(fetchLogs, REFRESH_MS);
+    const iv = setInterval(refreshAll, REFRESH_MS);
     return () => clearInterval(iv);
-  }, [authed, fetchLogs, selectedSessionCode, autoRefresh]);
+  }, [authed, refreshAll, selectedSessionCode, autoRefresh]);
 
   /* ── Find selected session object from list ── */
   const selectedSession = useMemo(() => {
@@ -256,18 +261,22 @@ export default function DashboardPage() {
     newStatus: string
   ) => {
     setUpdatingStatus(true);
+    const target = sessions.find((s) => s.session_code === sessionCode);
     try {
+      const payload: Record<string, unknown> = {
+        session_code: sessionCode,
+        status: newStatus,
+      };
+      if (newStatus === "running" && !target?.started_at) {
+        payload.started_at = new Date().toISOString();
+      }
+      if (newStatus === "completed" && !target?.ended_at) {
+        payload.ended_at = new Date().toISOString();
+      }
       await fetch("/api/sessions", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_code: sessionCode,
-          status: newStatus,
-          started_at:
-            newStatus === "running" ? new Date().toISOString() : undefined,
-          ended_at:
-            newStatus === "completed" ? new Date().toISOString() : undefined,
-        }),
+        body: JSON.stringify(payload),
       });
       await loadSessions();
     } finally {

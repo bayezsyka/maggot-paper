@@ -12,7 +12,9 @@ Dashboard ini dilengkapi pengaman akses sederhana. Untuk masuk ke halaman utama 
 s1t26k01
 ```
 
-> **Note**: *Passcode is for simple access gating, not production-grade authentication.*
+> [!WARNING]
+> - **Dashboard passcode is simple access gating, not production-grade authentication.**
+> - **Do not expose this dashboard URL publicly if delete endpoint remains unauthenticated.**
 
 ---
 

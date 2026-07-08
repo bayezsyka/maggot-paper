@@ -5,6 +5,127 @@ import type { CreateSessionPayload, UpdateSessionPayload, QualitySummary } from 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+interface SessionLogMetrics {
+  quality_summary: QualitySummary | null;
+  first_log_at: string | null;
+  last_log_at: string | null;
+  total_rows: number;
+}
+
+async function getSessionQualitySummary(
+  sessionId: string
+): Promise<SessionLogMetrics> {
+  const pageSize = 1000;
+  let from = 0;
+  let to = pageSize - 1;
+  const allLogs: {
+    recorded_at: string;
+    temp_air_in?: number | null;
+    temp_air_out?: number | null;
+    rh_in?: number | null;
+    rh_out?: number | null;
+    temp_media?: number | null;
+    sensor_error_flags?: string | null;
+  }[] = [];
+
+  while (true) {
+    const { data: batch, error: logsErr } = await supabaseAdmin
+      .from("sensor_logs")
+      .select(
+        "recorded_at, temp_air_in, temp_air_out, rh_in, rh_out, temp_media, sensor_error_flags"
+      )
+      .eq("session_id", sessionId)
+      .order("recorded_at", { ascending: true })
+      .range(from, to);
+
+    if (logsErr) {
+      console.error(
+        `[getSessionQualitySummary] Error fetching logs for session ${sessionId}: ${logsErr.message}`
+      );
+      return {
+        quality_summary: null,
+        first_log_at: null,
+        last_log_at: null,
+        total_rows: 0,
+      };
+    }
+
+    if (!batch || batch.length === 0) {
+      break;
+    }
+
+    allLogs.push(...batch);
+
+    if (batch.length < pageSize) {
+      break;
+    }
+
+    from += pageSize;
+    to += pageSize;
+  }
+
+  const totalRows = allLogs.length;
+  let missingTempIn = 0;
+  let missingTempOut = 0;
+  let missingRhIn = 0;
+  let missingRhOut = 0;
+  let missingTempMedia = 0;
+  let errorFlagCount = 0;
+
+  for (const row of allLogs) {
+    if (row.temp_air_in == null) missingTempIn++;
+    if (row.temp_air_out == null) missingTempOut++;
+    if (row.rh_in == null) missingRhIn++;
+    if (row.rh_out == null) missingRhOut++;
+    if (row.temp_media == null) missingTempMedia++;
+    if (row.sensor_error_flags && row.sensor_error_flags.trim() !== "") {
+      errorFlagCount++;
+    }
+  }
+
+  const firstLogAt = totalRows > 0 ? allLogs[0].recorded_at : null;
+  const lastLogAt = totalRows > 0 ? allLogs[totalRows - 1].recorded_at : null;
+
+  let durationSeconds = 0;
+  if (firstLogAt && lastLogAt) {
+    durationSeconds = Math.max(
+      0,
+      Math.round(
+        (new Date(lastLogAt).getTime() - new Date(firstLogAt).getTime()) / 1000
+      )
+    );
+  }
+
+  const expectedRows =
+    durationSeconds > 0 ? Math.ceil(durationSeconds / 30) + 1 : totalRows;
+  const missingRows = Math.max(0, expectedRows - totalRows);
+  const loggingSuccessPercent =
+    expectedRows > 0
+      ? Math.min(100, Math.round((totalRows / expectedRows) * 100))
+      : 100;
+
+  const quality_summary: QualitySummary = {
+    total_rows: totalRows,
+    missing_temp_air_in: missingTempIn,
+    missing_temp_air_out: missingTempOut,
+    missing_rh_in: missingRhIn,
+    missing_rh_out: missingRhOut,
+    missing_temp_media: missingTempMedia,
+    error_flag_count: errorFlagCount,
+    duration_seconds: durationSeconds,
+    expected_rows: expectedRows,
+    missing_rows: missingRows,
+    logging_success_percent: loggingSuccessPercent,
+  };
+
+  return {
+    quality_summary,
+    first_log_at: firstLogAt,
+    last_log_at: lastLogAt,
+    total_rows: totalRows,
+  };
+}
+
 /* ──────────────────────────────────────────────────────────
    GET /api/sessions  — list test sessions with metadata & full quality summary
    ────────────────────────────────────────────────────────── */
@@ -37,70 +158,7 @@ export async function GET() {
           ? raw[0]?.device_code ?? null
           : raw?.device_code ?? null;
 
-        // Fetch logs for complete quality calculation
-        const { data: logsData } = await supabaseAdmin
-          .from("sensor_logs")
-          .select(
-            "recorded_at, temp_air_in, temp_air_out, rh_in, rh_out, temp_media, sensor_error_flags"
-          )
-          .eq("session_id", s.id)
-          .order("recorded_at", { ascending: true });
-
-        const sessionLogs = logsData ?? [];
-        const totalRows = sessionLogs.length;
-
-        let missingTempIn = 0;
-        let missingTempOut = 0;
-        let missingRhIn = 0;
-        let missingRhOut = 0;
-        let missingTempMedia = 0;
-        let errorFlagCount = 0;
-
-        for (const row of sessionLogs) {
-          if (row.temp_air_in == null) missingTempIn++;
-          if (row.temp_air_out == null) missingTempOut++;
-          if (row.rh_in == null) missingRhIn++;
-          if (row.rh_out == null) missingRhOut++;
-          if (row.temp_media == null) missingTempMedia++;
-          if (row.sensor_error_flags && row.sensor_error_flags.trim() !== "") {
-            errorFlagCount++;
-          }
-        }
-
-        const firstLogAt = totalRows > 0 ? sessionLogs[0].recorded_at : null;
-        const lastLogAt = totalRows > 0 ? sessionLogs[totalRows - 1].recorded_at : null;
-
-        let durationSeconds = 0;
-        if (firstLogAt && lastLogAt) {
-          durationSeconds = Math.max(
-            0,
-            Math.round(
-              (new Date(lastLogAt).getTime() - new Date(firstLogAt).getTime()) / 1000
-            )
-          );
-        }
-
-        const expectedRows =
-          durationSeconds > 0 ? Math.ceil(durationSeconds / 30) + 1 : totalRows;
-        const missingRows = Math.max(0, expectedRows - totalRows);
-        const loggingSuccessPercent =
-          expectedRows > 0
-            ? Math.min(100, Math.round((totalRows / expectedRows) * 100))
-            : 100;
-
-        const quality_summary: QualitySummary = {
-          total_rows: totalRows,
-          missing_temp_air_in: missingTempIn,
-          missing_temp_air_out: missingTempOut,
-          missing_rh_in: missingRhIn,
-          missing_rh_out: missingRhOut,
-          missing_temp_media: missingTempMedia,
-          error_flag_count: errorFlagCount,
-          duration_seconds: durationSeconds,
-          expected_rows: expectedRows,
-          missing_rows: missingRows,
-          logging_success_percent: loggingSuccessPercent,
-        };
+        const metrics = await getSessionQualitySummary(s.id);
 
         return {
           id: s.id,
@@ -121,10 +179,10 @@ export async function GET() {
           ended_at: s.ended_at,
           status: s.status || "planned",
           device_code: deviceCode,
-          row_count: totalRows,
-          first_log_at: firstLogAt,
-          last_log_at: lastLogAt,
-          quality_summary,
+          row_count: metrics.total_rows,
+          first_log_at: metrics.first_log_at,
+          last_log_at: metrics.last_log_at,
+          quality_summary: metrics.quality_summary,
         };
       })
     );
