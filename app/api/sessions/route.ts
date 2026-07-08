@@ -1,12 +1,12 @@
 import { type NextRequest } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import type { CreateSessionPayload, UpdateSessionPayload } from "@/types/bsf";
+import type { CreateSessionPayload, UpdateSessionPayload, QualitySummary } from "@/types/bsf";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /* ──────────────────────────────────────────────────────────
-   GET /api/sessions  — list test sessions with metadata
+   GET /api/sessions  — list test sessions with metadata & full quality summary
    ────────────────────────────────────────────────────────── */
 export async function GET() {
   try {
@@ -27,7 +27,6 @@ export async function GET() {
 
     const rawSessions = data ?? [];
 
-    // Fetch log metadata (row_count, first_log_at, last_log_at) for each session
     const sessions = await Promise.all(
       rawSessions.map(async (s) => {
         const raw = s.devices as
@@ -38,24 +37,70 @@ export async function GET() {
           ? raw[0]?.device_code ?? null
           : raw?.device_code ?? null;
 
-        // Get count and latest log
-        const { count, data: latestData } = await supabaseAdmin
+        // Fetch logs for complete quality calculation
+        const { data: logsData } = await supabaseAdmin
           .from("sensor_logs")
-          .select("recorded_at", { count: "exact" })
+          .select(
+            "recorded_at, temp_air_in, temp_air_out, rh_in, rh_out, temp_media, sensor_error_flags"
+          )
           .eq("session_id", s.id)
-          .order("recorded_at", { ascending: false })
-          .limit(1);
+          .order("recorded_at", { ascending: true });
 
-        // Get earliest log
-        const { data: earliestData } = await supabaseAdmin
-          .from("sensor_logs")
-          .select("recorded_at")
-          .eq("session_id", s.id)
-          .order("recorded_at", { ascending: true })
-          .limit(1);
+        const sessionLogs = logsData ?? [];
+        const totalRows = sessionLogs.length;
 
-        const firstLogAt = earliestData?.[0]?.recorded_at ?? null;
-        const lastLogAt = latestData?.[0]?.recorded_at ?? null;
+        let missingTempIn = 0;
+        let missingTempOut = 0;
+        let missingRhIn = 0;
+        let missingRhOut = 0;
+        let missingTempMedia = 0;
+        let errorFlagCount = 0;
+
+        for (const row of sessionLogs) {
+          if (row.temp_air_in == null) missingTempIn++;
+          if (row.temp_air_out == null) missingTempOut++;
+          if (row.rh_in == null) missingRhIn++;
+          if (row.rh_out == null) missingRhOut++;
+          if (row.temp_media == null) missingTempMedia++;
+          if (row.sensor_error_flags && row.sensor_error_flags.trim() !== "") {
+            errorFlagCount++;
+          }
+        }
+
+        const firstLogAt = totalRows > 0 ? sessionLogs[0].recorded_at : null;
+        const lastLogAt = totalRows > 0 ? sessionLogs[totalRows - 1].recorded_at : null;
+
+        let durationSeconds = 0;
+        if (firstLogAt && lastLogAt) {
+          durationSeconds = Math.max(
+            0,
+            Math.round(
+              (new Date(lastLogAt).getTime() - new Date(firstLogAt).getTime()) / 1000
+            )
+          );
+        }
+
+        const expectedRows =
+          durationSeconds > 0 ? Math.ceil(durationSeconds / 30) + 1 : totalRows;
+        const missingRows = Math.max(0, expectedRows - totalRows);
+        const loggingSuccessPercent =
+          expectedRows > 0
+            ? Math.min(100, Math.round((totalRows / expectedRows) * 100))
+            : 100;
+
+        const quality_summary: QualitySummary = {
+          total_rows: totalRows,
+          missing_temp_air_in: missingTempIn,
+          missing_temp_air_out: missingTempOut,
+          missing_rh_in: missingRhIn,
+          missing_rh_out: missingRhOut,
+          missing_temp_media: missingTempMedia,
+          error_flag_count: errorFlagCount,
+          duration_seconds: durationSeconds,
+          expected_rows: expectedRows,
+          missing_rows: missingRows,
+          logging_success_percent: loggingSuccessPercent,
+        };
 
         return {
           id: s.id,
@@ -76,9 +121,10 @@ export async function GET() {
           ended_at: s.ended_at,
           status: s.status || "planned",
           device_code: deviceCode,
-          row_count: count ?? 0,
+          row_count: totalRows,
           first_log_at: firstLogAt,
           last_log_at: lastLogAt,
+          quality_summary,
         };
       })
     );
@@ -117,7 +163,6 @@ export async function POST(request: NextRequest) {
 
     const deviceCode = body.device_code || "bsf_hw_01";
 
-    // --- Resolve or create device ---
     let { data: device, error: deviceErr } = await supabaseAdmin
       .from("devices")
       .select("id")
@@ -147,7 +192,6 @@ export async function POST(request: NextRequest) {
       device = createdDev;
     }
 
-    // --- Check if session already exists ---
     const { data: existing } = await supabaseAdmin
       .from("test_sessions")
       .select("id, session_code")
@@ -161,7 +205,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // --- Insert session ---
     const { data: session, error: insertErr } = await supabaseAdmin
       .from("test_sessions")
       .insert({
@@ -266,6 +309,111 @@ export async function PATCH(request: NextRequest) {
     return Response.json({ ok: true, session });
   } catch (err) {
     console.error("[PATCH /api/sessions]", err);
+    return Response.json(
+      { ok: false, error: "Internal server error" },
+      { status: 500 }
+    );
+  }
+}
+
+/* ──────────────────────────────────────────────────────────
+   DELETE /api/sessions  — delete session (and optionally its logs)
+   ────────────────────────────────────────────────────────── */
+export async function DELETE(request: NextRequest) {
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const sessionCode = searchParams.get("session_code");
+    const deleteLogs = searchParams.get("delete_logs") === "true";
+
+    if (!sessionCode || !sessionCode.trim()) {
+      return Response.json(
+        { ok: false, error: "session_code parameter is required" },
+        { status: 400 }
+      );
+    }
+
+    // --- Lookup session ---
+    const { data: session, error: findErr } = await supabaseAdmin
+      .from("test_sessions")
+      .select("id, session_code")
+      .eq("session_code", sessionCode.trim())
+      .maybeSingle();
+
+    if (findErr) {
+      return Response.json(
+        { ok: false, error: `Lookup failed: ${findErr.message}` },
+        { status: 500 }
+      );
+    }
+    if (!session) {
+      return Response.json(
+        { ok: false, error: `Session not found: ${sessionCode}` },
+        { status: 404 }
+      );
+    }
+
+    // --- Check log count ---
+    const { count, error: countErr } = await supabaseAdmin
+      .from("sensor_logs")
+      .select("id", { count: "exact", head: true })
+      .eq("session_id", session.id);
+
+    if (countErr) {
+      return Response.json(
+        { ok: false, error: `Failed to count logs: ${countErr.message}` },
+        { status: 500 }
+      );
+    }
+
+    const logCount = count ?? 0;
+
+    if (logCount > 0 && !deleteLogs) {
+      return Response.json(
+        {
+          ok: false,
+          error: "Session has logs. Use delete_logs=true to delete session and its logs.",
+        },
+        { status: 409 }
+      );
+    }
+
+    // --- Delete logs if requested / present ---
+    let deletedLogsCount = 0;
+    if (logCount > 0 && deleteLogs) {
+      const { error: delLogsErr } = await supabaseAdmin
+        .from("sensor_logs")
+        .delete()
+        .eq("session_id", session.id);
+
+      if (delLogsErr) {
+        return Response.json(
+          { ok: false, error: `Failed deleting logs: ${delLogsErr.message}` },
+          { status: 500 }
+        );
+      }
+      deletedLogsCount = logCount;
+    }
+
+    // --- Delete session ---
+    const { error: delSessErr } = await supabaseAdmin
+      .from("test_sessions")
+      .delete()
+      .eq("id", session.id);
+
+    if (delSessErr) {
+      return Response.json(
+        { ok: false, error: `Failed deleting session: ${delSessErr.message}` },
+        { status: 500 }
+      );
+    }
+
+    return Response.json({
+      ok: true,
+      deleted_session_code: session.session_code,
+      deleted_logs: deletedLogsCount,
+    });
+  } catch (err) {
+    console.error("[DELETE /api/sessions]", err);
     return Response.json(
       { ok: false, error: "Internal server error" },
       { status: 500 }

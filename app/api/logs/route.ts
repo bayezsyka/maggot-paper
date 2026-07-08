@@ -85,6 +85,22 @@ export async function POST(request: NextRequest) {
     }
 
     if (!session) {
+      let stageName: string | null = null;
+      let durationHours: number | null = null;
+      if (body.test_stage === 1) {
+        stageName = "validation";
+        durationHours = 12;
+      } else if (body.test_stage === 2) {
+        stageName = "characterization";
+        durationHours = 12;
+      } else if (body.test_stage === 3) {
+        stageName = "threshold_control";
+        durationHours = 24;
+      } else if (body.test_stage === 4) {
+        stageName = "fuzzy_differential_control";
+        durationHours = 24;
+      }
+
       const { data: createdSess, error: createSessErr } = await supabaseAdmin
         .from("test_sessions")
         .insert({
@@ -92,6 +108,12 @@ export async function POST(request: NextRequest) {
           session_code: body.session_code,
           status: "running",
           started_at: new Date().toISOString(),
+          stage_number: body.test_stage ?? null,
+          stage_name: stageName,
+          controller_type: body.mode ?? null,
+          target_temp_min: body.target_temp_min ?? null,
+          target_temp_max: body.target_temp_max ?? null,
+          duration_plan_hours: durationHours,
         })
         .select("id")
         .single();

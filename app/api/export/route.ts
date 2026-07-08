@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /* ──────────────────────────────────────────────────────────
-   GET /api/export  — download sensor logs as semicolon CSV
+   GET /api/export  — download sensor logs as semicolon CSV (paginated)
    ────────────────────────────────────────────────────────── */
 export async function GET(request: NextRequest) {
   try {
@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
     const sessionCode =
       searchParams.get("session_code") ||
       process.env.DEFAULT_SESSION_CODE ||
-      "empty_chamber_test_01";
+      "stage1_validation_01";
 
     // --- Resolve session ---
     const { data: session, error: sessionErr } = await supabaseAdmin
@@ -37,18 +37,39 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // --- Fetch ALL logs for the session, ascending ---
-    const { data: logs, error: logsErr } = await supabaseAdmin
-      .from("sensor_logs")
-      .select("*")
-      .eq("session_id", session.id)
-      .order("recorded_at", { ascending: true });
+    // --- Paginated fetch of ALL logs for the session, ascending ---
+    const pageSize = 1000;
+    let from = 0;
+    let to = pageSize - 1;
+    const allLogs: SensorLog[] = [];
 
-    if (logsErr) {
-      return Response.json(
-        { ok: false, error: `Logs query failed: ${logsErr.message}` },
-        { status: 500 }
-      );
+    while (true) {
+      const { data: batch, error: logsErr } = await supabaseAdmin
+        .from("sensor_logs")
+        .select("*")
+        .eq("session_id", session.id)
+        .order("recorded_at", { ascending: true })
+        .range(from, to);
+
+      if (logsErr) {
+        return Response.json(
+          { ok: false, error: `Logs query failed: ${logsErr.message}` },
+          { status: 500 }
+        );
+      }
+
+      if (!batch || batch.length === 0) {
+        break;
+      }
+
+      allLogs.push(...(batch as SensorLog[]));
+
+      if (batch.length < pageSize) {
+        break;
+      }
+
+      from += pageSize;
+      to += pageSize;
     }
 
     const headers = [
@@ -79,7 +100,7 @@ export async function GET(request: NextRequest) {
       "note",
     ];
 
-    const rows = (logs as SensorLog[]).map((row) => [
+    const rows = allLogs.map((row) => [
       row.recorded_at ?? "",
       row.elapsed_seconds ?? "",
       session.session_code,

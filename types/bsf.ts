@@ -45,6 +45,21 @@ export interface Device {
 }
 
 /** Row returned from the `test_sessions` table / API */
+export interface QualitySummary {
+  total_rows: number;
+  missing_temp_air_in: number;
+  missing_temp_air_out: number;
+  missing_rh_in: number;
+  missing_rh_out: number;
+  missing_temp_media: number;
+  error_flag_count: number;
+  duration_seconds: number;
+  expected_rows: number;
+  missing_rows: number;
+  logging_success_percent: number;
+}
+
+/** Row returned from the `test_sessions` table / API */
 export interface TestSession {
   id: string;
   device_id?: string;
@@ -68,6 +83,7 @@ export interface TestSession {
   row_count?: number;
   first_log_at?: string | null;
   last_log_at?: string | null;
+  quality_summary?: QualitySummary | null;
 }
 
 /** Row returned from the `sensor_logs` table */

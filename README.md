@@ -12,6 +12,8 @@ Dashboard ini dilengkapi pengaman akses sederhana. Untuk masuk ke halaman utama 
 s1t26k01
 ```
 
+> **Note**: *Passcode is for simple access gating, not production-grade authentication.*
+
 ---
 
 ## 🚀 Quick Start
@@ -37,7 +39,8 @@ Isi variabel environment berikut di `.env.local` atau di dashboard hosting (Verc
 | `SUPABASE_URL` | URL project Supabase Anda |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase Service Role Key (Server-side ONLY, jangan diekspos ke client) |
 | `ESP32_API_KEY` | Key untuk autentikasi pengiriman POST ESP32 |
-| `DEFAULT_SESSION_CODE` | Sesi default saat pertama load, misal `stage1_validation_01` |
+| `DEFAULT_SESSION_CODE` | Sesi default saat load, misal `stage1_validation_01` |
+| `DASHBOARD_ACCESS_CODE` | Kode akses untuk membuka dashboard (`s1t26k01`) |
 
 ### 3. Run SQL Migration di Supabase SQL Editor
 
@@ -56,29 +59,46 @@ Buka [http://localhost:3000](http://localhost:3000).
 
 ---
 
-## 🧪 Daftar Sesi Eksperimen Tahap 1–4 (Presets)
+## 📋 Recommended Experiment Workflow
 
-Sistem siap menerima 4 tahap eksperimen utama untuk analisis paper:
+Berikut alur kerja yang direkomendasikan untuk menyelesaikan 4 tahap pengujian eksperimen:
 
-1. **`stage1_validation_01` (Validation Stage)**
-   - Stage Number: `1` | Stage Name: `validation`
-   - Controller Type: `validation_sequence`
-   - Target Temp: `28.0 — 30.0 °C` | Planned Duration: `12 jam`
-2. **`stage2_characterization_01` (Characterization Stage)**
-   - Stage Number: `2` | Stage Name: `characterization`
-   - Controller Type: `characterization_sequence`
-   - Target Temp: `28.0 — 30.0 °C` | Planned Duration: `12 jam`
-3. **`stage3_threshold_01` (Threshold Control Stage)**
-   - Stage Number: `3` | Stage Name: `threshold_control`
-   - Controller Type: `threshold`
-   - Target Temp: `28.0 — 30.0 °C` | Planned Duration: `24 jam`
-4. **`stage4_fuzzy_01` (Fuzzy Differential Control Stage)**
-   - Stage Number: `4` | Stage Name: `fuzzy_differential_control`
-   - Controller Type: `fuzzy_differential`
-   - Target Temp: `28.0 — 30.0 °C` | Planned Duration: `24 jam`
+1. **Run migration**: Eksekusi SQL di `supabase/migrations/002_experiment_fields.sql`.
+2. **Deploy to Vercel**: Deploy aplikasi atau jalankan secara lokal.
+3. **Open dashboard**: Buka dashboard dan masukkan passcode akses (`s1t26k01`).
+4. **Create all preset sessions**: Klik tombol **Create All Preset Sessions** pada bagian Experiment Setup.
+5. **Choose Stage 1 card**: Pilih kartu **Stage 1 (Validation)** di dashboard.
+6. **Copy firmware config**: Klik tombol **Copy Config** untuk menyalin konfigurasi firmware ke clipboard:
+   ```c
+   #define TEST_STAGE 1
+   const char* SESSION_CODE = "stage1_validation_01";
+   ```
+7. **Upload firmware to ESP32**: Tempelkan konfigurasi tersebut ke source code ESP32 (`esp32_logger.ino`) dan upload ke mikrokontroler.
+8. **Mark session as running**: Klik tombol **Start** pada kartu Stage 1 di dashboard.
+9. **Run test**: Jalankan eksperimen selama durasi yang ditentukan (12 jam untuk Stage 1 & 2, 24 jam untuk Stage 3 & 4).
+10. **Mark session as completed**: Setelah selesai, klik tombol **Complete** pada kartu sesi.
+11. **Export CSV**: Klik tombol **Export CSV** untuk mengunduh data pengujian lengkap yang sudah di-paginate (aman untuk eksperimen 12–24 jam).
+12. **Repeat for Stage 2–4**: Ulangi langkah 5–11 untuk Stage 2, Stage 3, dan Stage 4.
 
 > [!IMPORTANT]
-> **Penting untuk Sinkronisasi ESP32**: Pastikan firmware ESP32 mengirimkan `session_code` yang sama dengan sesi yang Anda pilih di dashboard agar data tersimpan di sesi yang sesuai.
+> **Catatan Penting Sinkronisasi ESP32**: Dashboard hanya memilih session untuk ditampilkan. Data masuk berdasarkan `SESSION_CODE` yang dikirim firmware ESP32. Memilih session di dashboard hanya mengubah tampilan, tidak mengubah konfigurasi di dalam firmware.
+
+---
+
+## 🧪 Daftar 4 Tahap Eksperimen
+
+1. **Stage 1: Validation (`stage1_validation_01`)**
+   - Durasi: `12 h` | Controller: `validation_sequence`
+   - Tujuan: Memvalidasi pembacaan sensor, aktuator, logging HTTP, dan sistem pengaman (safety).
+2. **Stage 2: Characterization (`stage2_characterization_01`)**
+   - Durasi: `12 h` | Controller: `characterization_sequence`
+   - Tujuan: Karakterisasi efek pemanas dan kipas terhadap dinamika suhu & kelembaban chamber.
+3. **Stage 3: Threshold Control (`stage3_threshold_01`)**
+   - Durasi: `24 h` | Controller: `threshold`
+   - Tujuan: Pengontrolan suhu baseline dengan rentang target `28.0 — 30.0 °C`.
+4. **Stage 4: Fuzzy Differential Control (`stage4_fuzzy_01`)**
+   - Durasi: `24 h` | Controller: `fuzzy_differential`
+   - Tujuan: Pengontrolan cerdas berbasis diferensial ($T_{in}, RH_{in}, T_{out}, RH_{out}, \Delta T, \Delta RH, \text{trend}$).
 
 ---
 
@@ -92,76 +112,11 @@ Content-Type: application/json
 x-api-key: <ESP32_API_KEY>
 ```
 
-#### 1. Contoh Payload ESP32 Lama (Tetap didukung penuh - Backward Compatible)
-```json
-{
-  "device_code": "bsf_hw_01",
-  "session_code": "empty_chamber_test_01",
-  "esp32_uptime_ms": 120000,
-  "elapsed_seconds": 120,
-  "mode": "fuzzy_strong_heating",
-  "temp_air_in": 26.5,
-  "rh_in": 72.3,
-  "temp_air_out": 25.9,
-  "rh_out": 66.8,
-  "temp_media": 27.1,
-  "soil_raw": 3190,
-  "heater_status": true,
-  "fan_intake_pwm": 190,
-  "fan_exhaust_pwm": 60,
-  "wifi_rssi": -57,
-  "note": "legacy payload"
-}
-```
-
-#### 2. Contoh Payload ESP32 Baru (Eksperimen Tahap 1–4)
-```json
-{
-  "device_code": "bsf_hw_01",
-  "session_code": "stage1_validation_01",
-  "esp32_uptime_ms": 120000,
-  "elapsed_seconds": 120,
-  "test_stage": 1,
-  "phase_name": "stage1_intake_medium",
-  "mode": "validation_sequence",
-  "target_temp_min": 28.0,
-  "target_temp_max": 30.0,
-  "temp_air_in": 26.5,
-  "rh_in": 72.3,
-  "temp_air_out": 25.9,
-  "rh_out": 66.8,
-  "temp_media": 27.1,
-  "soil_raw": 3190,
-  "delta_temp": 0.6,
-  "delta_rh": 5.5,
-  "temp_trend": 0.02,
-  "heater_status": true,
-  "heater_demand": 80.0,
-  "fan_intake_pwm": 190,
-  "fan_exhaust_pwm": 60,
-  "safety_state": "normal",
-  "sensor_error_flags": "",
-  "wifi_rssi": -57,
-  "note": "firmware=bsf_fw_v1.0"
-}
-```
-
 ---
 
-## 📊 Penjelasan Singkat Field Eksperimen
+## 📥 Export CSV untuk Analisis Paper (Paginated)
 
-- `delta_temp`: Selisih suhu udara dalam dengan luar chamber (`temp_air_in - temp_air_out`). Server menghitung otomatis jika tidak dikirim.
-- `delta_rh`: Selisih kelembaban udara dalam dengan luar chamber (`rh_in - rh_out`). Server menghitung otomatis jika tidak dikirim.
-- `temp_trend`: Perubahan suhu internal per interval monitoring.
-- `heater_demand`: Persentase kebutuhan daya/pemanasan pemanas (0–100%).
-- `safety_state`: Status proteksi sistem (`normal` / `sensor_error` / `overheat_cutoff` / `safe_stop`).
-- `sensor_error_flags`: String gabungan error sensor jika ada (misal `"SHT_ERR,DS18B20_ERR"`).
-
----
-
-## 📥 Export CSV untuk Analisis Paper
-
-Dapat dilakukan melalui tombol **Export CSV** di dashboard atau langsung via endpoint:
+Dapat dilakukan melalui tombol **Export CSV** di dashboard atau via endpoint:
 
 ```http
 GET /api/export?session_code=stage1_validation_01
@@ -171,6 +126,7 @@ Spesifikasi CSV:
 - **Delimiter**: Semicolon (`;`)
 - **Decimal**: Titik (`.`)
 - **Null / Missing value**: String kosong (`""`)
+- **Pagination**: Server melakukan perulangan paginasi batch 1000 baris agar data pengujian jangka panjang (12–24 jam) tidak terpotong.
 - **Urutan Kolom (25 kolom wajib urut)**:
   1. `recorded_at`
   2. `elapsed_seconds`

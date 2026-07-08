@@ -1,38 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { SESSION_PRESETS, type ExperimentStage, type SessionPreset } from "@/types/bsf";
-
-/* ── Types ─────────────────────────────────────────────── */
-interface DeviceInfo {
-  id: string;
-  device_code: string;
-  device_name?: string | null;
-}
-
-interface SessionInfo {
-  id: string;
-  session_code: string;
-  test_name?: string | null;
-  test_type?: string | null;
-  test_note?: string | null;
-  stage_number?: number | null;
-  stage_name?: string | null;
-  controller_type?: string | null;
-  target_temp_min?: number | null;
-  target_temp_max?: number | null;
-  duration_plan_hours?: number | null;
-  chamber_condition?: string | null;
-  location_note?: string | null;
-  firmware_version?: string | null;
-  started_at?: string | null;
-  ended_at?: string | null;
-  status?: string | null;
-  device_code?: string | null;
-  row_count?: number;
-  first_log_at?: string | null;
-  last_log_at?: string | null;
-}
+import {
+  SESSION_PRESETS,
+  type TestSession,
+  type QualitySummary,
+} from "@/types/bsf";
 
 interface LogRow {
   id: string;
@@ -66,8 +39,47 @@ interface LogRow {
 const REFRESH_MS = 30_000;
 const ACCESS_CODE = "s1t26k01";
 
+const STAGE_CONFIGS = [
+  {
+    stage_number: 1,
+    stage_name: "Validation",
+    session_code: "stage1_validation_01",
+    duration: "12 h",
+    duration_hours: 12,
+    controller: "validation_sequence",
+    firmware_config: `#define TEST_STAGE 1\nconst char* SESSION_CODE = "stage1_validation_01";`,
+  },
+  {
+    stage_number: 2,
+    stage_name: "Characterization",
+    session_code: "stage2_characterization_01",
+    duration: "12 h",
+    duration_hours: 12,
+    controller: "characterization_sequence",
+    firmware_config: `#define TEST_STAGE 2\nconst char* SESSION_CODE = "stage2_characterization_01";`,
+  },
+  {
+    stage_number: 3,
+    stage_name: "Threshold Control",
+    session_code: "stage3_threshold_01",
+    duration: "24 h",
+    duration_hours: 24,
+    controller: "threshold",
+    firmware_config: `#define TEST_STAGE 3\nconst char* SESSION_CODE = "stage3_threshold_01";`,
+  },
+  {
+    stage_number: 4,
+    stage_name: "Fuzzy Differential Control",
+    session_code: "stage4_fuzzy_01",
+    duration: "24 h",
+    duration_hours: 24,
+    controller: "fuzzy_differential",
+    firmware_config: `#define TEST_STAGE 4\nconst char* SESSION_CODE = "stage4_fuzzy_01";`,
+  },
+];
+
 export default function DashboardPage() {
-  /* ── Simple Passcode Auth State ──────────────────────── */
+  /* ── Passcode Auth State ── */
   const [authed, setAuthed] = useState(false);
   const [passcodeInput, setPasscodeInput] = useState("");
   const [passcodeError, setPasscodeError] = useState(false);
@@ -95,69 +107,38 @@ export default function DashboardPage() {
     setAuthed(false);
   };
 
-  /* ── Dashboard Core State ────────────────────────────── */
-  const [device, setDevice] = useState<DeviceInfo | null>(null);
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [selectedSessionCode, setSelectedSessionCode] = useState<string>("");
+  /* ── Core State ── */
+  const [sessions, setSessions] = useState<TestSession[]>([]);
+  const [selectedSessionCode, setSelectedSessionCode] = useState<string>(
+    "stage1_validation_01"
+  );
   const [logs, setLogs] = useState<LogRow[]>([]);
-  const [activeSession, setActiveSession] = useState<SessionInfo | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
 
-  // Device setup screen
-  const [needSetup, setNeedSetup] = useState(false);
-  const [setupCode, setSetupCode] = useState("bsf_hw_01");
-  const [setupName, setSetupName] = useState("BSF Hardware Unit 01");
-  const [setupLoading, setSetupLoading] = useState(false);
+  // Copy feedback state
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
-  // Modal Create/Manage Session
-  const [showSessionModal, setShowSessionModal] = useState(false);
-  const [selectedPresetKey, setSelectedPresetKey] = useState<string>("stage1_validation_01");
-  const [customSessionCode, setCustomSessionCode] = useState<string>("");
-  const [stageNum, setStageNum] = useState<number>(1);
-  const [stageName, setStageName] = useState<string>("validation");
-  const [ctrlType, setCtrlType] = useState<string>("validation_sequence");
-  const [targetMin, setTargetMin] = useState<number>(28);
-  const [targetMax, setTargetMax] = useState<number>(30);
-  const [durationHours, setDurationHours] = useState<number>(12);
-  const [chamberCond, setChamberCond] = useState<string>("empty chamber with test media");
-  const [locationNote, setLocationNote] = useState<string>("indoor non-AC");
-  const [firmwareVer, setFirmwareVer] = useState<string>("bsf_fw_v1.0");
-  const [sessionFormMsg, setSessionFormMsg] = useState<string | null>(null);
+  // Delete modal state
+  const [deleteTargetSession, setDeleteTargetSession] =
+    useState<TestSession | null>(null);
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState<string>("");
+  const [deleteWithLogs, setDeleteWithLogs] = useState<boolean>(false);
+  const [deleting, setDeleting] = useState<boolean>(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  // Status updating
+  // Status updating state
   const [updatingStatus, setUpdatingStatus] = useState<boolean>(false);
 
-  /* ── Load Device & Sessions ──────────────────────────── */
-  const loadDevice = useCallback(async () => {
-    try {
-      const res = await fetch("/api/devices");
-      const data = await res.json();
-      if (data.ok && data.devices?.length > 0) {
-        setDevice(data.devices[0]);
-        setNeedSetup(false);
-      } else {
-        setNeedSetup(true);
-      }
-    } catch {
-      setNeedSetup(true);
-    }
-  }, []);
-
+  /* ── Load Sessions ── */
   const loadSessions = useCallback(async () => {
     try {
       const res = await fetch("/api/sessions");
       const data = await res.json();
       if (data.ok && data.sessions) {
         setSessions(data.sessions);
-        setSelectedSessionCode((prev) => {
-          if (prev && data.sessions.some((s: SessionInfo) => s.session_code === prev)) {
-            return prev;
-          }
-          return data.sessions[0]?.session_code || "";
-        });
       }
     } catch {
       /* silent */
@@ -166,15 +147,13 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!authed) return;
-    loadDevice();
     loadSessions();
-  }, [authed, loadDevice, loadSessions]);
+  }, [authed, loadSessions]);
 
-  /* ── Fetch Logs for Selected Session ─────────────────── */
+  /* ── Fetch Logs for Selected Session ── */
   const fetchLogs = useCallback(async () => {
     if (!selectedSessionCode) {
       setLogs([]);
-      setActiveSession(null);
       return;
     }
     setLoading(true);
@@ -185,16 +164,13 @@ export default function DashboardPage() {
       );
       const data = await res.json();
       if (!data.ok) {
-        setError(data.error);
-        setActiveSession(null);
         setLogs([]);
       } else {
-        setActiveSession(data.session);
         setLogs(data.logs || []);
         setLastRefresh(new Date());
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Gagal memuat data");
+      setError(err instanceof Error ? err.message : "Failed loading logs");
     } finally {
       setLoading(false);
     }
@@ -208,219 +184,180 @@ export default function DashboardPage() {
     return () => clearInterval(iv);
   }, [authed, fetchLogs, selectedSessionCode, autoRefresh]);
 
-  /* ── Preset Selection Handler ────────────────────────── */
-  const applyPreset = (key: string) => {
-    setSelectedPresetKey(key);
-    const p = SESSION_PRESETS[key];
-    if (p) {
-      setCustomSessionCode(p.session_code);
-      setStageNum(p.stage_number);
-      setStageName(p.stage_name);
-      setCtrlType(p.controller_type);
-      setTargetMin(p.target_temp_min);
-      setTargetMax(p.target_temp_max);
-      setDurationHours(p.duration_plan_hours);
-    }
-  };
+  /* ── Find selected session object from list ── */
+  const selectedSession = useMemo(() => {
+    return (
+      sessions.find((s) => s.session_code === selectedSessionCode) || null
+    );
+  }, [sessions, selectedSessionCode]);
 
-  /* ── Create Session ──────────────────────────────────── */
-  const handleCreateSession = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!customSessionCode.trim()) return;
-    setSessionFormMsg(null);
-
+  /* ── Create Single Stage Session ── */
+  const handleCreateStageSession = async (
+    code: string,
+    stageNum: number,
+    stageName: string,
+    controller: string,
+    durationHours: number
+  ) => {
     try {
-      const res = await fetch("/api/sessions", {
+      await fetch("/api/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          device_code: device?.device_code || "bsf_hw_01",
-          session_code: customSessionCode.trim(),
+          session_code: code,
           stage_number: stageNum,
           stage_name: stageName,
-          controller_type: ctrlType,
-          target_temp_min: targetMin,
-          target_temp_max: targetMax,
+          controller_type: controller,
+          target_temp_min: 28,
+          target_temp_max: 30,
           duration_plan_hours: durationHours,
-          chamber_condition: chamberCond,
-          location_note: locationNote,
-          firmware_version: firmwareVer,
           status: "planned",
         }),
       });
-      const data = await res.json();
-      if (!data.ok) {
-        setSessionFormMsg(data.error);
-      } else {
-        setShowSessionModal(false);
-        await loadSessions();
-        setSelectedSessionCode(data.session.session_code);
-      }
+      await loadSessions();
+      setSelectedSessionCode(code);
     } catch {
-      setSessionFormMsg("Gagal membuat sesi bereksperimen");
+      /* silent */
     }
   };
 
-  /* ── Update Session Status ───────────────────────────── */
-  const handleUpdateStatus = async (newStatus: string) => {
-    if (!activeSession) return;
+  /* ── Create All 4 Preset Sessions ── */
+  const handleCreateAllPresets = async () => {
+    setLoading(true);
+    try {
+      for (const cfg of STAGE_CONFIGS) {
+        const exists = sessions.some((s) => s.session_code === cfg.session_code);
+        if (!exists) {
+          await fetch("/api/sessions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_code: cfg.session_code,
+              stage_number: cfg.stage_number,
+              stage_name: cfg.stage_name,
+              controller_type: cfg.controller,
+              target_temp_min: 28,
+              target_temp_max: 30,
+              duration_plan_hours: cfg.duration_hours,
+              status: "planned",
+            }),
+          });
+        }
+      }
+      await loadSessions();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /* ── Update Session Status ── */
+  const handleUpdateStatus = async (
+    sessionCode: string,
+    newStatus: string
+  ) => {
     setUpdatingStatus(true);
     try {
-      const res = await fetch("/api/sessions", {
+      await fetch("/api/sessions", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          session_code: activeSession.session_code,
+          session_code: sessionCode,
           status: newStatus,
           started_at:
-            newStatus === "running" && !activeSession.started_at
-              ? new Date().toISOString()
-              : undefined,
+            newStatus === "running" ? new Date().toISOString() : undefined,
           ended_at:
             newStatus === "completed" ? new Date().toISOString() : undefined,
         }),
       });
-      const data = await res.json();
-      if (data.ok) {
-        setActiveSession(data.session);
-        await loadSessions();
-      }
+      await loadSessions();
     } finally {
       setUpdatingStatus(false);
     }
   };
 
-  /* ── Device Setup Screen (One-time) ──────────────────── */
-  const handleSetupDevice = async () => {
-    if (!setupCode.trim()) return;
-    setSetupLoading(true);
+  /* ── Delete Session Handler ── */
+  const openDeleteModal = (session: TestSession) => {
+    setDeleteTargetSession(session);
+    setDeleteConfirmInput("");
+    setDeleteWithLogs((session.row_count || 0) > 0);
+    setDeleteError(null);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTargetSession) return;
+    if (deleteConfirmInput !== deleteTargetSession.session_code) {
+      setDeleteError("Typed session_code does not match confirmation.");
+      return;
+    }
+    setDeleting(true);
+    setDeleteError(null);
     try {
-      const res = await fetch("/api/devices", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          device_code: setupCode.trim(),
-          device_name: setupName.trim() || undefined,
-        }),
-      });
+      const res = await fetch(
+        `/api/sessions?session_code=${encodeURIComponent(
+          deleteTargetSession.session_code
+        )}&delete_logs=${deleteWithLogs ? "true" : "false"}`,
+        { method: "DELETE" }
+      );
       const data = await res.json();
-      if (data.ok) {
-        setDevice(data.device);
-        setNeedSetup(false);
+      if (!data.ok) {
+        setDeleteError(data.error);
       } else {
-        setError(data.error);
+        setDeleteTargetSession(null);
+        await loadSessions();
+        if (selectedSessionCode === deleteTargetSession.session_code) {
+          setSelectedSessionCode("");
+          setLogs([]);
+        }
       }
     } catch {
-      setError("Gagal mendaftarkan device");
+      setDeleteError("Failed deleting session");
     } finally {
-      setSetupLoading(false);
+      setDeleting(false);
     }
   };
 
-  /* ── Data Quality Calculations ───────────────────────── */
-  const quality = useMemo(() => {
-    const totalRows = logs.length;
-    if (totalRows === 0) {
-      return {
-        totalRows: 0,
-        missingTempIn: 0,
-        missingTempOut: 0,
-        missingRhIn: 0,
-        missingRhOut: 0,
-        missingTempMedia: 0,
-        errorFlagCount: 0,
-        durationSeconds: 0,
-        expectedRows: 0,
-        missingRows: 0,
-        successPercent: 0,
-      };
-    }
-
-    let missingTempIn = 0;
-    let missingTempOut = 0;
-    let missingRhIn = 0;
-    let missingRhOut = 0;
-    let missingTempMedia = 0;
-    let errorFlagCount = 0;
-
-    for (const row of logs) {
-      if (row.temp_air_in == null) missingTempIn++;
-      if (row.temp_air_out == null) missingTempOut++;
-      if (row.rh_in == null) missingRhIn++;
-      if (row.rh_out == null) missingRhOut++;
-      if (row.temp_media == null) missingTempMedia++;
-      if (row.sensor_error_flags && row.sensor_error_flags.trim() !== "") {
-        errorFlagCount++;
-      }
-    }
-
-    // Earliest and latest from loaded logs
-    const earliestTime = new Date(logs[logs.length - 1].recorded_at).getTime();
-    const latestTime = new Date(logs[0].recorded_at).getTime();
-    const durationSeconds = Math.max(0, Math.round((latestTime - earliestTime) / 1000));
-    const expectedRows = durationSeconds > 0 ? Math.ceil(durationSeconds / 30) + 1 : totalRows;
-    const missingRows = Math.max(0, expectedRows - totalRows);
-    const successPercent =
-      expectedRows > 0 ? Math.min(100, Math.round((totalRows / expectedRows) * 100)) : 100;
-
-    return {
-      totalRows,
-      missingTempIn,
-      missingTempOut,
-      missingRhIn,
-      missingRhOut,
-      missingTempMedia,
-      errorFlagCount,
-      durationSeconds,
-      expectedRows,
-      missingRows,
-      successPercent,
-    };
-  }, [logs]);
+  /* ── Copy to Clipboard ── */
+  const copyFirmwareConfig = (configText: string, sessionCode: string) => {
+    navigator.clipboard.writeText(configText);
+    setCopiedCode(sessionCode);
+    setTimeout(() => setCopiedCode(null), 2000);
+  };
 
   const latest = logs[0] ?? null;
 
-  /* ── VIEW: Passcode Auth Screen ──────────────────────── */
+  /* ── VIEW: Clean White Passcode Screen ── */
   if (!authed) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 text-slate-900">
         <form
           onSubmit={handleLogin}
-          className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl"
+          className="w-full max-w-sm bg-white border border-slate-200 rounded-xl p-6 shadow-sm"
         >
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold text-lg">
-              BSF
-            </div>
-            <div>
-              <h1 className="text-base font-semibold text-white">
-                BSF Microclimate Controller
-              </h1>
-              <p className="text-xs text-slate-400">Akses Eksperimen Tahap 1–4</p>
-            </div>
+          <div className="mb-5">
+            <h1 className="text-base font-semibold text-slate-900">
+              BSF Microclimate Experiment
+            </h1>
+            <p className="text-xs text-slate-500 mt-1">
+              Please enter access passcode to open dashboard.
+            </p>
           </div>
-          <p className="text-xs text-slate-400 mb-4">
-            Masukkan kode akses keamanan untuk membuka dashboard dan mengunduh data paper.
-          </p>
           <div className="space-y-3">
             <input
               type="password"
-              placeholder="Masukkan kode akses..."
+              placeholder="Access passcode..."
               value={passcodeInput}
               onChange={(e) => setPasscodeInput(e.target.value)}
-              className="w-full h-10 rounded-lg bg-slate-950 border border-slate-700 px-3 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-emerald-500"
+              className="w-full h-9 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:border-slate-500"
               autoFocus
             />
             {passcodeError && (
-              <p className="text-xs text-rose-400">
-                Kode akses salah. Silakan coba kembali.
-              </p>
+              <p className="text-xs text-red-600">Incorrect passcode.</p>
             )}
             <button
               type="submit"
-              className="w-full h-10 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm transition-colors cursor-pointer"
+              className="w-full h-9 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium transition-colors cursor-pointer"
             >
-              Masuk Dashboard
+              Unlock Dashboard
             </button>
           </div>
         </form>
@@ -428,131 +365,47 @@ export default function DashboardPage() {
     );
   }
 
-  /* ── VIEW: Device Setup Screen ───────────────────────── */
-  if (needSetup) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
-        <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl">
-          <h1 className="text-base font-semibold text-white mb-1">
-            Registrasi Device ESP32
-          </h1>
-          <p className="text-xs text-slate-400 mb-5">
-            Daftarkan device hardware pertama sebelum merekam eksperimen.
-          </p>
-          <div className="space-y-3">
-            <input
-              type="text"
-              placeholder="Kode device (cth: bsf_hw_01)"
-              value={setupCode}
-              onChange={(e) => setSetupCode(e.target.value)}
-              className="w-full h-10 rounded-lg bg-slate-950 border border-slate-700 px-3 text-sm text-white"
-            />
-            <input
-              type="text"
-              placeholder="Nama device (opsional)"
-              value={setupName}
-              onChange={(e) => setSetupName(e.target.value)}
-              className="w-full h-10 rounded-lg bg-slate-950 border border-slate-700 px-3 text-sm text-white"
-            />
-            <button
-              onClick={handleSetupDevice}
-              disabled={!setupCode.trim() || setupLoading}
-              className="w-full h-10 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-colors cursor-pointer disabled:opacity-50"
-            >
-              {setupLoading ? "Mendaftarkan..." : "Daftarkan Device"}
-            </button>
-          </div>
-          {error && <p className="mt-3 text-xs text-rose-400">{error}</p>}
-        </div>
-      </div>
-    );
-  }
-
-  /* ── VIEW: Main Dashboard ────────────────────────────── */
+  /* ── VIEW: Clean White Minimal Dashboard ── */
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 pb-16">
-      {/* ── HEADER ── */}
-      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold text-sm">
-              BSF
-            </div>
-            <div>
-              <h1 className="text-sm font-semibold text-white">
-                BSF Microclimate Controller Dashboard
-              </h1>
-              <p className="text-xs text-slate-400">
-                Data Akuisisi & Analisis Eksperimen Tahap 1–4
-              </p>
-            </div>
+    <div className="min-h-screen bg-slate-50 text-slate-900 pb-16">
+      {/* ── A. Header ── */}
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h1 className="text-base font-semibold text-slate-900">
+              BSF Microclimate Experiment
+            </h1>
+            <p className="text-xs text-slate-500">
+              ESP32 data acquisition dashboard for stage 1–4 testing
+            </p>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-            {/* A. Session Selector */}
-            <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg p-1">
-              <select
-                value={selectedSessionCode}
-                onChange={(e) => setSelectedSessionCode(e.target.value)}
-                className="h-8 rounded bg-slate-950 text-xs text-white px-2 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-              >
-                <option value="">-- Pilih Sesi Eksperimen --</option>
-                {sessions.map((s) => (
-                  <option key={s.id} value={s.session_code}>
-                    {s.session_code} {s.stage_name ? `(${s.stage_name})` : ""} [
-                    {s.status || "planned"}]
-                  </option>
-                ))}
-              </select>
-
-              <button
-                onClick={() => {
-                  applyPreset("stage1_validation_01");
-                  setShowSessionModal(true);
-                }}
-                className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-500 text-xs font-medium text-white transition-colors cursor-pointer whitespace-nowrap"
-              >
-                + Buat / Preset Sesi
-              </button>
-            </div>
-
             <button
-              onClick={fetchLogs}
+              onClick={() => {
+                loadSessions();
+                fetchLogs();
+              }}
               disabled={loading}
-              className="h-9 px-3 rounded-lg border border-slate-700 bg-slate-900 hover:bg-slate-800 text-xs font-medium text-slate-200 transition-colors cursor-pointer"
+              className="h-8 px-3 rounded border border-slate-200 bg-white hover:bg-slate-50 text-xs font-medium text-slate-700 transition-colors cursor-pointer"
             >
-              {loading ? "Memuat..." : "Refresh"}
+              {loading ? "Refreshing..." : "Refresh"}
             </button>
 
-            {/* Auto Refresh Toggle */}
             <button
               onClick={() => setAutoRefresh(!autoRefresh)}
-              className={`h-9 px-3 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
+              className={`h-8 px-3 rounded border text-xs font-medium transition-colors cursor-pointer ${
                 autoRefresh
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
-                  : "border-slate-700 bg-slate-900 text-slate-400"
+                  ? "border-slate-300 bg-slate-100 text-slate-900"
+                  : "border-slate-200 bg-white text-slate-500"
               }`}
             >
-              Auto Refresh: {autoRefresh ? "30s ON" : "OFF"}
+              Auto refresh: {autoRefresh ? "30s ON" : "OFF"}
             </button>
-
-            {/* Export CSV Button */}
-            {selectedSessionCode && (
-              <a
-                href={`/api/export?session_code=${encodeURIComponent(
-                  selectedSessionCode
-                )}`}
-                download
-                className="h-9 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium flex items-center gap-1.5 transition-colors"
-              >
-                <span>Export CSV</span>
-              </a>
-            )}
 
             <button
               onClick={handleLogout}
-              className="h-9 px-2.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-xs text-slate-400 hover:text-rose-400 transition-colors"
-              title="Keluar"
+              className="h-8 px-3 rounded border border-slate-200 bg-white hover:bg-slate-50 text-xs text-slate-600 transition-colors cursor-pointer"
             >
               Lock
             </button>
@@ -560,340 +413,533 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 pt-6 space-y-6">
-        {/* IMPORTANT ALERT IF ESP32 SESSION CODE MISMATCH NOTICE */}
-        <div className="bg-slate-900/90 border border-amber-500/30 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="text-xs text-slate-300 space-y-1">
-            <p className="font-semibold text-amber-400">
-              ⚠️ Catatan Sinkronisasi ESP32 & Sesi Eksperimen
-            </p>
-            <p>
-              Pastikan firmware ESP32 mengirimkan{" "}
-              <code className="bg-slate-950 px-1.5 py-0.5 rounded text-emerald-400 border border-slate-800">
-                &quot;session_code&quot;: &quot;{selectedSessionCode || "..."}&quot;
-              </code>{" "}
-              pada POST JSON agar data terekam di sesi yang tepat. Sesi baru akan
-              dibuat otomatis jika belum ada.
-            </p>
-          </div>
-          {activeSession && (
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="text-xs text-slate-400">Status Sesi:</span>
-              <select
-                value={activeSession.status || "planned"}
-                disabled={updatingStatus}
-                onChange={(e) => handleUpdateStatus(e.target.value)}
-                className="h-8 px-2.5 rounded-lg bg-slate-950 border border-slate-700 text-xs font-medium text-white focus:outline-none focus:border-emerald-500 cursor-pointer"
-              >
-                <option value="planned">planned</option>
-                <option value="running">running</option>
-                <option value="completed">completed</option>
-                <option value="invalid">invalid</option>
-              </select>
-            </div>
-          )}
-        </div>
-
+      <main className="max-w-7xl mx-auto px-6 pt-6 space-y-6">
         {error && (
-          <div className="bg-rose-950/40 border border-rose-500/30 text-rose-300 text-xs rounded-xl p-3">
+          <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-3">
             {error}
           </div>
         )}
 
-        {/* B. EXPERIMENT SUMMARY CARDS */}
-        {activeSession ? (
-          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
-            <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">
-              Experiment Summary — {activeSession.session_code}
-            </h2>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
-              <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400 block">Stage / Name</span>
-                <span className="text-sm font-semibold text-white mt-0.5 block">
-                  Stage {activeSession.stage_number || "?"}:{" "}
-                  {activeSession.stage_name || "N/A"}
+        {/* ── B. Experiment Setup Section ── */}
+        <section className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">
+                Experiment Setup — Stage 1 to 4
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Data masuk ke session berdasarkan SESSION_CODE di firmware
+                ESP32. Memilih session di dashboard hanya mengubah tampilan,
+                tidak mengubah firmware.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleCreateAllPresets}
+                disabled={loading}
+                className="h-8 px-3 rounded bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium transition-colors cursor-pointer whitespace-nowrap"
+              >
+                Create All Preset Sessions
+              </button>
+              <button
+                onClick={loadSessions}
+                className="h-8 px-3 rounded border border-slate-200 bg-white hover:bg-slate-50 text-xs text-slate-700 transition-colors cursor-pointer"
+              >
+                Refresh Sessions
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {STAGE_CONFIGS.map((cfg) => {
+              const sessionObj = sessions.find(
+                (s) => s.session_code === cfg.session_code
+              );
+              const status = sessionObj ? sessionObj.status || "Planned" : "Missing";
+              const rowCount = sessionObj ? sessionObj.row_count || 0 : 0;
+              const isSelected = selectedSessionCode === cfg.session_code;
+
+              return (
+                <div
+                  key={cfg.stage_number}
+                  className={`border rounded-lg p-4 flex flex-col justify-between transition-colors ${
+                    isSelected
+                      ? "border-slate-400 bg-slate-50/70"
+                      : "border-slate-200 bg-white"
+                  }`}
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <span className="text-[10px] uppercase font-semibold text-slate-500">
+                          Stage {cfg.stage_number}
+                        </span>
+                        <h3 className="text-sm font-semibold text-slate-900">
+                          {cfg.stage_name}
+                        </h3>
+                      </div>
+
+                      {/* Status badge */}
+                      <span
+                        className={`px-2 py-0.5 rounded text-[11px] font-medium ${
+                          status === "completed" || status === "Completed"
+                            ? "bg-green-100 text-green-800"
+                            : status === "running" || status === "Running"
+                              ? "bg-amber-100 text-amber-800"
+                              : status === "invalid" || status === "Invalid"
+                                ? "bg-red-100 text-red-800"
+                                : status === "Missing"
+                                  ? "bg-slate-100 text-slate-500"
+                                  : "bg-slate-100 text-slate-700"
+                        }`}
+                      >
+                        {status}
+                      </span>
+                    </div>
+
+                    <div className="text-xs text-slate-600 space-y-1">
+                      <div>
+                        <span className="text-slate-500">Code:</span>{" "}
+                        <span className="font-mono text-slate-800">
+                          {cfg.session_code}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Duration:</span>{" "}
+                        {cfg.duration} |{" "}
+                        <span className="text-slate-500">Ctrl:</span>{" "}
+                        {cfg.controller}
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Rows:</span>{" "}
+                        {rowCount.toLocaleString()}
+                      </div>
+                      {sessionObj?.first_log_at && (
+                        <div className="text-[11px] text-slate-500 truncate">
+                          First:{" "}
+                          {new Date(sessionObj.first_log_at).toLocaleString()}
+                        </div>
+                      )}
+                      {sessionObj?.last_log_at && (
+                        <div className="text-[11px] text-slate-500 truncate">
+                          Last:{" "}
+                          {new Date(sessionObj.last_log_at).toLocaleString()}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="bg-slate-50 border border-slate-200 rounded p-2 text-[11px] font-mono text-slate-700">
+                      <div>#define TEST_STAGE {cfg.stage_number}</div>
+                      <div>
+                        const char* SESSION_CODE = &quot;{cfg.session_code}&quot;;
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Buttons */}
+                  <div className="pt-4 border-t border-slate-100 mt-4 space-y-2">
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {!sessionObj ? (
+                        <button
+                          onClick={() =>
+                            handleCreateStageSession(
+                              cfg.session_code,
+                              cfg.stage_number,
+                              cfg.stage_name,
+                              cfg.controller,
+                              cfg.duration_hours
+                            )
+                          }
+                          className="h-8 rounded bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium transition-colors cursor-pointer"
+                        >
+                          Create
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => setSelectedSessionCode(cfg.session_code)}
+                          className={`h-8 rounded text-xs font-medium transition-colors cursor-pointer ${
+                            isSelected
+                              ? "bg-slate-900 text-white"
+                              : "border border-slate-200 bg-white hover:bg-slate-50 text-slate-800"
+                          }`}
+                        >
+                          {isSelected ? "Viewing" : "View"}
+                        </button>
+                      )}
+
+                      <button
+                        onClick={() =>
+                          copyFirmwareConfig(
+                            cfg.firmware_config,
+                            cfg.session_code
+                          )
+                        }
+                        className="h-8 rounded border border-slate-200 bg-white hover:bg-slate-50 text-xs text-slate-700 transition-colors cursor-pointer"
+                      >
+                        {copiedCode === cfg.session_code
+                          ? "Copied"
+                          : "Copy Config"}
+                      </button>
+                    </div>
+
+                    {sessionObj && (
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <button
+                          onClick={() =>
+                            handleUpdateStatus(cfg.session_code, "running")
+                          }
+                          disabled={updatingStatus}
+                          className="h-7 px-2 rounded border border-slate-200 bg-white hover:bg-slate-50 text-[11px] text-slate-700 transition-colors cursor-pointer"
+                        >
+                          Start
+                        </button>
+                        <button
+                          onClick={() =>
+                            handleUpdateStatus(cfg.session_code, "completed")
+                          }
+                          disabled={updatingStatus}
+                          className="h-7 px-2 rounded border border-slate-200 bg-white hover:bg-slate-50 text-[11px] text-slate-700 transition-colors cursor-pointer"
+                        >
+                          Complete
+                        </button>
+                        <button
+                          onClick={() =>
+                            handleUpdateStatus(cfg.session_code, "invalid")
+                          }
+                          disabled={updatingStatus}
+                          className="h-7 px-2 rounded border border-slate-200 bg-white hover:bg-slate-50 text-[11px] text-slate-700 transition-colors cursor-pointer"
+                        >
+                          Mark Invalid
+                        </button>
+                        <button
+                          onClick={() => openDeleteModal(sessionObj)}
+                          className="h-7 px-2 rounded border border-red-200 bg-white hover:bg-red-50 text-[11px] text-red-600 transition-colors cursor-pointer ml-auto"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* ── C. Active Session Summary ── */}
+        <section className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 border-b border-slate-100 pb-3">
+            <div>
+              <span className="text-xs uppercase font-semibold text-slate-500">
+                Active Session Summary
+              </span>
+              <h2 className="text-sm font-semibold text-slate-900">
+                {selectedSessionCode || "No session selected"}
+              </h2>
+            </div>
+
+            {selectedSessionCode && (
+              <a
+                href={`/api/export?session_code=${encodeURIComponent(
+                  selectedSessionCode
+                )}`}
+                download
+                className="h-8 px-4 rounded bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium flex items-center transition-colors"
+              >
+                Export CSV
+              </a>
+            )}
+          </div>
+
+          {selectedSession ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-4 text-xs">
+              <div>
+                <span className="text-slate-500 block">Session Code</span>
+                <span className="font-mono font-medium text-slate-900 mt-0.5 block">
+                  {selectedSession.session_code}
                 </span>
               </div>
-
-              <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400 block">Controller Type</span>
-                <span className="text-sm font-semibold text-emerald-400 mt-0.5 block">
-                  {activeSession.controller_type || "N/A"}
+              <div>
+                <span className="text-slate-500 block">Stage</span>
+                <span className="font-medium text-slate-900 mt-0.5 block">
+                  Stage {selectedSession.stage_number || "-"}:{" "}
+                  {selectedSession.stage_name || "-"}
                 </span>
               </div>
-
-              <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400 block">Target Temp Range</span>
-                <span className="text-sm font-semibold text-amber-300 mt-0.5 block">
-                  {activeSession.target_temp_min ?? "?"} —{" "}
-                  {activeSession.target_temp_max ?? "?"} °C
+              <div>
+                <span className="text-slate-500 block">Controller</span>
+                <span className="font-medium text-slate-900 mt-0.5 block">
+                  {selectedSession.controller_type || "-"}
                 </span>
               </div>
-
-              <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400 block">Plan Duration</span>
-                <span className="text-sm font-semibold text-white mt-0.5 block">
-                  {activeSession.duration_plan_hours ?? "?"} Jam
+              <div>
+                <span className="text-slate-500 block">Status</span>
+                <span className="font-medium text-slate-900 mt-0.5 block">
+                  {selectedSession.status || "planned"}
                 </span>
               </div>
-
-              <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400 block">Latest Phase / Mode</span>
-                <span className="text-sm font-semibold text-blue-300 mt-0.5 block truncate">
-                  {latest?.phase_name || latest?.mode || "-"}
+              <div>
+                <span className="text-slate-500 block">Target Temp</span>
+                <span className="font-medium text-slate-900 mt-0.5 block">
+                  28–30 °C
                 </span>
               </div>
-
-              <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400 block">First Log At</span>
-                <span className="text-xs font-mono text-slate-300 mt-1 block">
-                  {logs.length > 0
-                    ? new Date(logs[logs.length - 1].recorded_at).toLocaleTimeString()
+              <div>
+                <span className="text-slate-500 block">Planned Duration</span>
+                <span className="font-medium text-slate-900 mt-0.5 block">
+                  {selectedSession.duration_plan_hours || "-"} h
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">Total Rows</span>
+                <span className="font-medium text-slate-900 mt-0.5 block">
+                  {selectedSession.row_count || 0}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">Time Span</span>
+                <span className="font-mono text-slate-900 mt-0.5 block truncate">
+                  {selectedSession.first_log_at
+                    ? new Date(selectedSession.first_log_at).toLocaleTimeString()
+                    : "-"}{" "}
+                  —{" "}
+                  {selectedSession.last_log_at
+                    ? new Date(selectedSession.last_log_at).toLocaleTimeString()
                     : "-"}
-                </span>
-              </div>
-
-              <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400 block">Last Log At</span>
-                <span className="text-xs font-mono text-slate-300 mt-1 block">
-                  {logs.length > 0
-                    ? new Date(logs[0].recorded_at).toLocaleTimeString()
-                    : "-"}
-                </span>
-              </div>
-
-              <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400 block">Total Rows Loaded</span>
-                <span className="text-sm font-semibold text-emerald-400 mt-0.5 block">
-                  {quality.totalRows} log
-                </span>
-              </div>
-
-              <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400 block">Chamber Condition</span>
-                <span className="text-xs text-slate-300 mt-1 block truncate">
-                  {activeSession.chamber_condition || "-"}
-                </span>
-              </div>
-
-              <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400 block">Firmware</span>
-                <span className="text-xs font-mono text-slate-300 mt-1 block">
-                  {activeSession.firmware_version || "-"}
                 </span>
               </div>
             </div>
-          </section>
-        ) : null}
+          ) : (
+            <p className="text-xs text-slate-500">
+              Select a stage card above to view active session summary.
+            </p>
+          )}
+        </section>
 
-        {/* C. LATEST SENSOR CARDS & D. LATEST ACTUATOR CARDS */}
+        {/* ── D. Latest Readings & E. Actuator State ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* C. Latest Sensor Cards */}
-          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
-            <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">
+          {/* D. Latest Readings */}
+          <section className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+            <h2 className="text-xs uppercase font-semibold text-slate-500 mb-4">
               Latest Sensor Readings
             </h2>
             <div className="grid grid-cols-3 gap-3">
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">Temp Air In</span>
-                <div className="text-lg font-bold text-emerald-400 mt-1">
-                  {latest?.temp_air_in ?? "--"}{" "}
-                  <span className="text-xs font-normal text-slate-400">°C</span>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">T_in</span>
+                <div className="text-base font-semibold text-slate-900 mt-0.5">
+                  {latest?.temp_air_in ?? "--"} °C
                 </div>
               </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">RH In</span>
-                <div className="text-lg font-bold text-blue-400 mt-1">
-                  {latest?.rh_in ?? "--"}{" "}
-                  <span className="text-xs font-normal text-slate-400">%</span>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">RH_in</span>
+                <div className="text-base font-semibold text-slate-900 mt-0.5">
+                  {latest?.rh_in ?? "--"} %
                 </div>
               </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">Temp Media</span>
-                <div className="text-lg font-bold text-amber-400 mt-1">
-                  {latest?.temp_media ?? "--"}{" "}
-                  <span className="text-xs font-normal text-slate-400">°C</span>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">T_media</span>
+                <div className="text-base font-semibold text-slate-900 mt-0.5">
+                  {latest?.temp_media ?? "--"} °C
                 </div>
               </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">Temp Air Out</span>
-                <div className="text-lg font-bold text-emerald-300 mt-1">
-                  {latest?.temp_air_out ?? "--"}{" "}
-                  <span className="text-xs font-normal text-slate-400">°C</span>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">T_out</span>
+                <div className="text-base font-semibold text-slate-900 mt-0.5">
+                  {latest?.temp_air_out ?? "--"} °C
                 </div>
               </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">RH Out</span>
-                <div className="text-lg font-bold text-blue-300 mt-1">
-                  {latest?.rh_out ?? "--"}{" "}
-                  <span className="text-xs font-normal text-slate-400">%</span>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">RH_out</span>
+                <div className="text-base font-semibold text-slate-900 mt-0.5">
+                  {latest?.rh_out ?? "--"} %
                 </div>
               </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">Soil Raw</span>
-                <div className="text-lg font-bold text-slate-200 mt-1 font-mono">
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">Soil raw</span>
+                <div className="text-base font-semibold text-slate-900 mt-0.5 font-mono">
                   {latest?.soil_raw ?? "--"}
                 </div>
               </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">Delta Temp (In-Out)</span>
-                <div className="text-base font-bold text-purple-300 mt-1">
-                  {latest?.delta_temp ?? "--"}{" "}
-                  <span className="text-xs font-normal text-slate-400">°C</span>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">ΔT (In - Out)</span>
+                <div className="text-base font-semibold text-slate-900 mt-0.5">
+                  {latest?.delta_temp ?? "--"} °C
                 </div>
               </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">Delta RH</span>
-                <div className="text-base font-bold text-purple-300 mt-1">
-                  {latest?.delta_rh ?? "--"}{" "}
-                  <span className="text-xs font-normal text-slate-400">%</span>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">ΔRH (In - Out)</span>
+                <div className="text-base font-semibold text-slate-900 mt-0.5">
+                  {latest?.delta_rh ?? "--"} %
                 </div>
               </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">Temp Trend</span>
-                <div className="text-base font-bold text-slate-200 mt-1 font-mono">
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">temp_trend</span>
+                <div className="text-base font-semibold text-slate-900 mt-0.5 font-mono">
                   {latest?.temp_trend ?? "--"}
                 </div>
               </div>
             </div>
           </section>
 
-          {/* D. Latest Actuator Cards */}
-          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
-            <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">
-              Latest Actuators & Controller State
+          {/* E. Actuator State */}
+          <section className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+            <h2 className="text-xs uppercase font-semibold text-slate-500 mb-4">
+              Actuator State & Safety
             </h2>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">Heater Status</span>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">Heater Status</span>
                 <div className="mt-1">
                   {latest?.heater_status === true ? (
-                    <span className="inline-block px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 text-sm font-semibold">
+                    <span className="px-2 py-0.5 rounded bg-slate-900 text-white text-xs font-semibold">
                       ON
                     </span>
                   ) : latest?.heater_status === false ? (
-                    <span className="inline-block px-2 py-0.5 rounded bg-slate-800 text-slate-400 text-sm font-semibold">
+                    <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-semibold">
                       OFF
                     </span>
                   ) : (
-                    <span className="text-slate-500">--</span>
+                    <span className="text-slate-400 text-xs">--</span>
                   )}
                 </div>
               </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">Heater Demand</span>
-                <div className="text-lg font-bold text-rose-400 mt-1">
-                  {latest?.heater_demand ?? "--"}{" "}
-                  <span className="text-xs font-normal text-slate-400">%</span>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">Heater Demand</span>
+                <div className="text-base font-semibold text-slate-900 mt-0.5">
+                  {latest?.heater_demand ?? "--"} %
                 </div>
               </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">Safety State</span>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">Safety State</span>
                 <div className="mt-1">
                   <span
-                    className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
-                      !latest?.safety_state || latest.safety_state === "normal"
-                        ? "bg-emerald-500/20 text-emerald-400"
-                        : "bg-rose-500/20 text-rose-400"
+                    className={`px-2 py-0.5 rounded text-xs font-medium ${
+                      !latest?.safety_state ||
+                      latest.safety_state === "normal"
+                        ? "bg-green-100 text-green-800"
+                        : "bg-red-100 text-red-800 font-semibold"
                     }`}
                   >
                     {latest?.safety_state || "normal"}
                   </span>
                 </div>
               </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">Intake Fan PWM</span>
-                <div className="text-lg font-bold text-sky-400 mt-1 font-mono">
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">Intake PWM</span>
+                <div className="text-base font-semibold text-slate-900 mt-0.5 font-mono">
                   {latest?.fan_intake_pwm ?? "--"}{" "}
-                  <span className="text-xs font-normal text-slate-500">/ 255</span>
+                  <span className="text-xs font-normal text-slate-400">/ 255</span>
                 </div>
               </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">Exhaust Fan PWM</span>
-                <div className="text-lg font-bold text-sky-400 mt-1 font-mono">
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">Exhaust PWM</span>
+                <div className="text-base font-semibold text-slate-900 mt-0.5 font-mono">
                   {latest?.fan_exhaust_pwm ?? "--"}{" "}
-                  <span className="text-xs font-normal text-slate-500">/ 255</span>
+                  <span className="text-xs font-normal text-slate-400">/ 255</span>
                 </div>
               </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-[11px] text-slate-400">Sensor Errors</span>
-                <div className="text-xs font-mono text-rose-400 mt-1.5 truncate">
-                  {latest?.sensor_error_flags || "OK (None)"}
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-[11px] text-slate-500">Sensor Errors</span>
+                <div className="text-xs font-mono text-slate-800 mt-1 truncate">
+                  {latest?.sensor_error_flags || "None"}
                 </div>
               </div>
             </div>
           </section>
         </div>
 
-        {/* E. DATA QUALITY SECTION */}
-        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
-          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">
-            Experiment Data Quality Assurance (Paper Validation)
-          </h2>
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
-            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-              <span className="text-[11px] text-slate-400">Total Rows</span>
-              <div className="text-base font-bold text-white mt-1">
-                {quality.totalRows}
-              </div>
-            </div>
-
-            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-              <span className="text-[11px] text-slate-400">Logging Success</span>
-              <div className="text-base font-bold text-emerald-400 mt-1">
-                {quality.successPercent}%
-              </div>
-            </div>
-
-            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-              <span className="text-[11px] text-slate-400">Expected (30s interval)</span>
-              <div className="text-base font-bold text-slate-300 mt-1">
-                {quality.expectedRows} rows
-              </div>
-            </div>
-
-            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-              <span className="text-[11px] text-slate-400">Missing Rows Est.</span>
-              <div className="text-base font-bold text-amber-400 mt-1">
-                {quality.missingRows}
-              </div>
-            </div>
-
-            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-              <span className="text-[11px] text-slate-400">Missing Temp In/Out</span>
-              <div className="text-sm font-semibold text-slate-300 mt-1">
-                In: {quality.missingTempIn} | Out: {quality.missingTempOut}
-              </div>
-            </div>
-
-            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-              <span className="text-[11px] text-slate-400">Missing RH / Media</span>
-              <div className="text-sm font-semibold text-slate-300 mt-1">
-                RH: {quality.missingRhIn + quality.missingRhOut} | Med:{" "}
-                {quality.missingTempMedia}
-              </div>
-            </div>
+        {/* ── F. Data Quality (Entire Session Summary) ── */}
+        <section className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+          <div className="mb-4">
+            <h2 className="text-xs uppercase font-semibold text-slate-500">
+              Data Quality Assurance (Entire Session Data)
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Metrics calculated across all recorded logs of session{" "}
+              <span className="font-mono text-slate-800">
+                {selectedSessionCode || "-"}
+              </span>
+            </p>
           </div>
+
+          {selectedSession?.quality_summary ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-slate-500 block">Total Rows</span>
+                <span className="text-sm font-semibold text-slate-900 mt-0.5 block">
+                  {selectedSession.quality_summary.total_rows}
+                </span>
+              </div>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-slate-500 block">Est. Duration</span>
+                <span className="text-sm font-semibold text-slate-900 mt-0.5 block">
+                  {Math.round(
+                    selectedSession.quality_summary.duration_seconds / 3600
+                  )}
+                  h{" "}
+                  {Math.round(
+                    (selectedSession.quality_summary.duration_seconds % 3600) /
+                      60
+                  )}
+                  m
+                </span>
+              </div>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-slate-500 block">Expected (30s)</span>
+                <span className="text-sm font-semibold text-slate-900 mt-0.5 block">
+                  {selectedSession.quality_summary.expected_rows} rows
+                </span>
+              </div>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-slate-500 block">Missing Rows Est.</span>
+                <span className="text-sm font-semibold text-slate-900 mt-0.5 block">
+                  {selectedSession.quality_summary.missing_rows}
+                </span>
+              </div>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-slate-500 block">Logging Success</span>
+                <span className="text-sm font-semibold text-slate-900 mt-0.5 block">
+                  {selectedSession.quality_summary.logging_success_percent}%
+                </span>
+              </div>
+              <div className="border border-slate-200 rounded-lg p-3">
+                <span className="text-slate-500 block">Error Flag Count</span>
+                <span className="text-sm font-semibold text-slate-900 mt-0.5 block">
+                  {selectedSession.quality_summary.error_flag_count}
+                </span>
+              </div>
+              <div className="border border-slate-200 rounded-lg p-3 col-span-2">
+                <span className="text-slate-500 block">
+                  Missing Temp (In / Out)
+                </span>
+                <span className="text-sm font-semibold text-slate-900 mt-0.5 block">
+                  In: {selectedSession.quality_summary.missing_temp_air_in} |
+                  Out: {selectedSession.quality_summary.missing_temp_air_out}
+                </span>
+              </div>
+              <div className="border border-slate-200 rounded-lg p-3 col-span-2">
+                <span className="text-slate-500 block">
+                  Missing RH / Media Temp
+                </span>
+                <span className="text-sm font-semibold text-slate-900 mt-0.5 block">
+                  RH In: {selectedSession.quality_summary.missing_rh_in} | RH Out:{" "}
+                  {selectedSession.quality_summary.missing_rh_out} | Media:{" "}
+                  {selectedSession.quality_summary.missing_temp_media}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-slate-500">
+              No quality summary available for selected session.
+            </p>
+          )}
         </section>
 
-        {/* F. RECENT LOGS TABLE */}
-        <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
-          <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-            <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-              Recent Sensor Logs ({logs.length} loaded)
+        {/* ── G. Recent Logs Table (Preview 100-500 rows) ── */}
+        <section className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+          <div className="p-4 border-b border-slate-200 flex items-center justify-between">
+            <h2 className="text-xs uppercase font-semibold text-slate-500">
+              Recent Sensor Logs Preview ({logs.length} rows loaded)
             </h2>
             {lastRefresh && (
               <span className="text-xs text-slate-500">
@@ -905,77 +951,74 @@ export default function DashboardPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
-                <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-medium">
+                <tr className="border-b border-slate-200 bg-slate-50 text-slate-600 font-medium">
                   <th className="py-2.5 px-3">Time</th>
                   <th className="py-2.5 px-3">Elapsed (s)</th>
                   <th className="py-2.5 px-3">Phase / Mode</th>
-                  <th className="py-2.5 px-3">Temp In</th>
-                  <th className="py-2.5 px-3">RH In</th>
-                  <th className="py-2.5 px-3">Temp Out</th>
-                  <th className="py-2.5 px-3">RH Out</th>
+                  <th className="py-2.5 px-3">T_in</th>
+                  <th className="py-2.5 px-3">RH_in</th>
+                  <th className="py-2.5 px-3">T_out</th>
+                  <th className="py-2.5 px-3">RH_out</th>
                   <th className="py-2.5 px-3">Media</th>
                   <th className="py-2.5 px-3">Heater</th>
                   <th className="py-2.5 px-3">Demand</th>
-                  <th className="py-2.5 px-3">Fan In/Out</th>
+                  <th className="py-2.5 px-3">PWM In/Out</th>
                   <th className="py-2.5 px-3">Safety</th>
                   <th className="py-2.5 px-3">RSSI</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60 font-mono">
+              <tbody className="divide-y divide-slate-100 font-mono text-slate-800">
                 {logs.length === 0 ? (
                   <tr>
-                    <td colSpan={13} className="py-8 text-center text-slate-500 font-sans">
-                      Belum ada data sensor untuk sesi ini.
+                    <td
+                      colSpan={13}
+                      className="py-8 text-center text-slate-500 font-sans"
+                    >
+                      No log data recorded for this session yet.
                     </td>
                   </tr>
                 ) : (
                   logs.map((row) => (
-                    <tr key={row.id} className="hover:bg-slate-800/40">
-                      <td className="py-2 px-3 text-slate-300">
+                    <tr key={row.id} className="hover:bg-slate-50">
+                      <td className="py-2 px-3 text-slate-700">
                         {new Date(row.recorded_at).toLocaleTimeString()}
                       </td>
-                      <td className="py-2 px-3 text-slate-400">
+                      <td className="py-2 px-3 text-slate-500">
                         {row.elapsed_seconds ?? "-"}
                       </td>
-                      <td className="py-2 px-3 text-emerald-400 font-sans">
+                      <td className="py-2 px-3 text-slate-900 font-sans">
                         {row.phase_name || row.mode || "-"}
                       </td>
-                      <td className="py-2 px-3 text-emerald-300">
-                        {row.temp_air_in ?? "-"}
-                      </td>
-                      <td className="py-2 px-3 text-blue-300">{row.rh_in ?? "-"}</td>
-                      <td className="py-2 px-3 text-emerald-200">
-                        {row.temp_air_out ?? "-"}
-                      </td>
-                      <td className="py-2 px-3 text-blue-200">{row.rh_out ?? "-"}</td>
-                      <td className="py-2 px-3 text-amber-300">
-                        {row.temp_media ?? "-"}
-                      </td>
+                      <td className="py-2 px-3">{row.temp_air_in ?? "-"}</td>
+                      <td className="py-2 px-3">{row.rh_in ?? "-"}</td>
+                      <td className="py-2 px-3">{row.temp_air_out ?? "-"}</td>
+                      <td className="py-2 px-3">{row.rh_out ?? "-"}</td>
+                      <td className="py-2 px-3">{row.temp_media ?? "-"}</td>
                       <td className="py-2 px-3">
                         {row.heater_status ? (
-                          <span className="text-rose-400 font-bold">ON</span>
+                          <span className="text-slate-900 font-bold">ON</span>
                         ) : (
                           <span className="text-slate-500">OFF</span>
                         )}
                       </td>
-                      <td className="py-2 px-3 text-rose-300">
+                      <td className="py-2 px-3">
                         {row.heater_demand != null ? `${row.heater_demand}%` : "-"}
                       </td>
-                      <td className="py-2 px-3 text-sky-400">
+                      <td className="py-2 px-3">
                         {row.fan_intake_pwm ?? "-"} / {row.fan_exhaust_pwm ?? "-"}
                       </td>
                       <td className="py-2 px-3 font-sans">
                         <span
                           className={`px-1.5 py-0.5 rounded text-[10px] ${
                             !row.safety_state || row.safety_state === "normal"
-                              ? "bg-emerald-500/10 text-emerald-400"
-                              : "bg-rose-500/20 text-rose-400 font-bold"
+                              ? "bg-green-100 text-green-800"
+                              : "bg-red-100 text-red-800 font-semibold"
                           }`}
                         >
                           {row.safety_state || "normal"}
                         </span>
                       </td>
-                      <td className="py-2 px-3 text-slate-400">
+                      <td className="py-2 px-3 text-slate-500">
                         {row.wifi_rssi ? `${row.wifi_rssi} dBm` : "-"}
                       </td>
                     </tr>
@@ -986,177 +1029,67 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        {/* ── MODAL: CREATE / PRESET SESSION ── */}
-        {showSessionModal && (
-          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-semibold text-white">
-                  Buat Sesi Eksperimen Baru / Preset Tahap 1–4
-                </h3>
+        {/* ── Delete Confirmation Modal ── */}
+        {deleteTargetSession && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+            <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl p-6 shadow-lg space-y-4">
+              <h3 className="text-sm font-semibold text-slate-900">
+                Confirm Delete Session
+              </h3>
+              <p className="text-xs text-slate-600">
+                You are about to delete session{" "}
+                <span className="font-mono font-semibold text-slate-900">
+                  {deleteTargetSession.session_code}
+                </span>{" "}
+                ({deleteTargetSession.row_count || 0} rows recorded).
+              </p>
+
+              {(deleteTargetSession.row_count || 0) > 0 && (
+                <label className="flex items-center gap-2 text-xs text-slate-800 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={deleteWithLogs}
+                    onChange={(e) => setDeleteWithLogs(e.target.checked)}
+                    className="rounded border-slate-300"
+                  />
+                  <span>Delete session and all {deleteTargetSession.row_count} logs</span>
+                </label>
+              )}
+
+              <div>
+                <label className="text-xs text-slate-600 block mb-1">
+                  Type session code to confirm:
+                </label>
+                <input
+                  type="text"
+                  placeholder={deleteTargetSession.session_code}
+                  value={deleteConfirmInput}
+                  onChange={(e) => setDeleteConfirmInput(e.target.value)}
+                  className="w-full h-9 rounded border border-slate-300 px-3 text-xs font-mono focus:outline-none focus:border-slate-500"
+                />
+              </div>
+
+              {deleteError && (
+                <p className="text-xs text-red-600">{deleteError}</p>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2">
                 <button
-                  onClick={() => setShowSessionModal(false)}
-                  className="text-slate-400 hover:text-white text-sm cursor-pointer"
+                  type="button"
+                  onClick={() => setDeleteTargetSession(null)}
+                  className="h-8 px-3 rounded border border-slate-200 text-xs text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
                 >
-                  ✕
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDelete}
+                  disabled={deleting}
+                  className="h-8 px-3 rounded bg-red-600 hover:bg-red-700 text-white text-xs font-medium transition-colors cursor-pointer"
+                >
+                  {deleting ? "Deleting..." : "Delete Session"}
                 </button>
               </div>
-
-              {/* 1-Click Preset Selector */}
-              <div className="mb-5 space-y-2">
-                <label className="text-xs font-medium text-slate-300 block">
-                  Pilih Preset Eksperimen Cepat:
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {Object.keys(SESSION_PRESETS).map((key) => {
-                    const preset = SESSION_PRESETS[key];
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => applyPreset(key)}
-                        className={`p-2.5 rounded-lg border text-left text-xs transition-colors cursor-pointer ${
-                          selectedPresetKey === key
-                            ? "border-emerald-500 bg-emerald-500/10 text-white"
-                            : "border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-700"
-                        }`}
-                      >
-                        <div className="font-semibold text-emerald-400">
-                          Tahap {preset.stage_number}: {preset.stage_name}
-                        </div>
-                        <div className="text-[10px] text-slate-400 mt-0.5">
-                          {preset.controller_type} • {preset.duration_plan_hours}h
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <form onSubmit={handleCreateSession} className="space-y-3">
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">
-                    Session Code (akan dikirimkan oleh ESP32):
-                  </label>
-                  <input
-                    type="text"
-                    value={customSessionCode}
-                    onChange={(e) => setCustomSessionCode(e.target.value)}
-                    className="w-full h-9 rounded-lg bg-slate-950 border border-slate-700 px-3 text-xs text-white"
-                    required
-                  />
-                </div>
-
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <label className="text-[11px] text-slate-400 block mb-1">
-                      Stage No
-                    </label>
-                    <input
-                      type="number"
-                      value={stageNum}
-                      onChange={(e) => setStageNum(Number(e.target.value))}
-                      className="w-full h-9 rounded-lg bg-slate-950 border border-slate-700 px-3 text-xs text-white"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] text-slate-400 block mb-1">
-                      Stage Name
-                    </label>
-                    <input
-                      type="text"
-                      value={stageName}
-                      onChange={(e) => setStageName(e.target.value)}
-                      className="w-full h-9 rounded-lg bg-slate-950 border border-slate-700 px-3 text-xs text-white"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] text-slate-400 block mb-1">
-                      Controller
-                    </label>
-                    <input
-                      type="text"
-                      value={ctrlType}
-                      onChange={(e) => setCtrlType(e.target.value)}
-                      className="w-full h-9 rounded-lg bg-slate-950 border border-slate-700 px-3 text-xs text-white"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <label className="text-[11px] text-slate-400 block mb-1">
-                      Target Min (°C)
-                    </label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={targetMin}
-                      onChange={(e) => setTargetMin(Number(e.target.value))}
-                      className="w-full h-9 rounded-lg bg-slate-950 border border-slate-700 px-3 text-xs text-white"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] text-slate-400 block mb-1">
-                      Target Max (°C)
-                    </label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={targetMax}
-                      onChange={(e) => setTargetMax(Number(e.target.value))}
-                      className="w-full h-9 rounded-lg bg-slate-950 border border-slate-700 px-3 text-xs text-white"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] text-slate-400 block mb-1">
-                      Plan Durasi (J)
-                    </label>
-                    <input
-                      type="number"
-                      value={durationHours}
-                      onChange={(e) => setDurationHours(Number(e.target.value))}
-                      className="w-full h-9 rounded-lg bg-slate-950 border border-slate-700 px-3 text-xs text-white"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">
-                    Kondisi Chamber:
-                  </label>
-                  <input
-                    type="text"
-                    value={chamberCond}
-                    onChange={(e) => setChamberCond(e.target.value)}
-                    className="w-full h-9 rounded-lg bg-slate-950 border border-slate-700 px-3 text-xs text-white"
-                  />
-                </div>
-
-                {sessionFormMsg && (
-                  <p className="text-xs text-rose-400">{sessionFormMsg}</p>
-                )}
-
-                <div className="flex items-center justify-end gap-2 pt-3">
-                  <button
-                    type="button"
-                    onClick={() => setShowSessionModal(false)}
-                    className="h-9 px-4 rounded-lg border border-slate-700 text-xs text-slate-300 hover:bg-slate-800 transition-colors cursor-pointer"
-                  >
-                    Batal
-                  </button>
-                  <button
-                    type="submit"
-                    className="h-9 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-medium text-white transition-colors cursor-pointer"
-                  >
-                    Simpan & Pilih Sesi
-                  </button>
-                </div>
-              </form>
             </div>
           </div>
         )}
