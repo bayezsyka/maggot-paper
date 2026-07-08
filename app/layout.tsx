@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "BSF Microclimate Logger",
   description:
-    "Real-time ESP32 sensor monitoring dashboard for BSF (Black Soldier Fly) microclimate experiments.",
+    "Real-time ESP32 sensor monitoring dashboard for BSF microclimate experiments.",
 };
 
 export default function RootLayout({
@@ -24,11 +24,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col font-[family-name:var(--font-geist-sans)]">
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
+      <body className="min-h-screen bg-white text-[#1a1a1a] font-[family-name:var(--font-geist-sans)] antialiased">
         {children}
       </body>
     </html>

@@ -42,7 +42,7 @@ export async function GET() {
         test_note: s.test_note,
         started_at: s.started_at,
         ended_at: s.ended_at,
-        device_code: deviceInfo?.device_code ?? null,
+        device_code: deviceCode,
       };
     });
 
@@ -61,14 +61,6 @@ export async function GET() {
    ────────────────────────────────────────────────────────── */
 export async function POST(request: NextRequest) {
   try {
-    // --- Auth ---
-    const apiKey = request.headers.get("x-api-key");
-    if (!apiKey || apiKey !== process.env.ESP32_API_KEY) {
-      return Response.json(
-        { ok: false, error: "Unauthorized – invalid or missing x-api-key" },
-        { status: 401 }
-      );
-    }
 
     // --- Parse body ---
     let body: CreateSessionPayload;
